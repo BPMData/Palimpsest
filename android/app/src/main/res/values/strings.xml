@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Palimpsest</string>
+    <string name="title_activity_main">Palimpsest</string>
+    <string name="package_name">io.github.bpmdata.palimpsest</string>
+    <string name="custom_url_scheme">io.github.bpmdata.palimpsest</string>
+</resources>

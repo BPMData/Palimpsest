@@ -1,0 +1,8 @@
+{
+  "appId": "io.github.bpmdata.palimpsest",
+  "appName": "Palimpsest",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#15130f"
+  }
+}
