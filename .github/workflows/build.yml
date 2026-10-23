@@ -1,0 +1,39 @@
+name: Test and build the APK
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+
+      - name: Browser tests
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Build the APK
+        run: |
+          npx cap sync android
+          cd android && ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: palimpsest-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

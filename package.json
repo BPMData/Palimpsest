@@ -1,0 +1,21 @@
+{
+  "name": "palimpsest",
+  "version": "1.0.0",
+  "description": "Palimpsest: a comic and ebook reader with pen annotation.",
+  "scripts": {
+    "test": "playwright test",
+    "sync": "cap sync android"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
+    "@playwright/test": "^1.64.1",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^4.10.38"
+  },
+  "private": true
+}
