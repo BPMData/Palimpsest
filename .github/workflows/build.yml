@@ -38,12 +38,19 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-  # The same tests in Safari's engine, as an early warning for the iPad version.
-  # It reports, but a failure here doesn't stop the APK or block a merge (yet).
+  # iPad early warning: the same tests in WebKit (Safari's engine).
+  # It NEVER blocks a merge or the APK: the job stays green even when tests fail.
+  # Instead it records what broke, so it can all be fixed once there's an iPad to test on:
+  #   - every run: a to-do list on the run's summary page, a warning per failing test,
+  #     and a "webkit-report" download (full report, screenshots, step-by-step replays; kept 90 days)
+  #   - runs on main: one open issue labelled "ipad", kept up to date (closed when everything passes)
   webkit:
+    name: iPad early warning (WebKit, never blocks)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,6 +59,56 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Browser tests in WebKit (Safari's engine)
+        continue-on-error: true
         run: |
           npx playwright install --with-deps webkit
           npx playwright test --project=webkit
+
+      - name: Write the iPad to-do list
+        if: always()
+        run: node .github/scripts/webkit-report.mjs
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webkit-report
+          path: |
+            reports/
+            test-results/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Keep the "ipad" issue up to date
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('reports/results.json')) { core.warning('The WebKit tests did not run, so the ipad issue was left as it was.'); return; }
+            const body = fs.readFileSync('reports/webkit.md', 'utf8');
+            const now = JSON.parse(fs.readFileSync('reports/webkit-failures.json', 'utf8'));
+            const { owner, repo } = context.repo;
+            const TITLE = 'iPad: tests failing in WebKit';
+            const sha = context.sha.slice(0, 7);
+            const open = (await github.rest.issues.listForRepo({ owner, repo, labels: 'ipad', state: 'open', per_page: 50 })).data;
+            const issue = open.find((i) => i.title === TITLE);
+            if (!now.length) {
+              if (issue) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: `All WebKit tests pass as of \`${sha}\`. Closing this; a new one opens if something breaks again.` });
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed', body });
+              }
+              return;
+            }
+            if (!issue) {
+              try { await github.rest.issues.createLabel({ owner, repo, name: 'ipad', color: 'a2a2a2', description: 'Needed for the iPad version' }); } catch {}
+              await github.rest.issues.create({ owner, repo, title: TITLE, body, labels: ['ipad'] });
+              return;
+            }
+            const before = JSON.parse((/webkit-failures: (\[.*?\]) -->/.exec(issue.body || '') || [0, '[]'])[1]);
+            await github.rest.issues.update({ owner, repo, issue_number: issue.number, body });
+            const fixed = before.filter((t) => !now.includes(t)), broke = now.filter((t) => !before.includes(t));
+            if (fixed.length || broke.length) {
+              const list = (title, xs) => (xs.length ? `**${title}**\n` + xs.map((x) => `- ${x}`).join('\n') + '\n' : '');
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `Changes as of \`${sha}\`:\n\n${list('Newly failing', broke)}${list('Now passing', fixed)}` });
+            }
