@@ -32,7 +32,7 @@ jobs:
           npx cap sync android
           cd android && ./gradlew assembleDebug --no-daemon
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: palimpsest-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
@@ -68,7 +68,7 @@ jobs:
         if: always()
         run: node .github/scripts/webkit-report.mjs
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: webkit-report
