@@ -27,6 +27,16 @@ async function useLibrary(page) {
     }
     const root = dirHandle('My Library', tree, '/tests/fixtures/library/');
     window.showDirectoryPicker = async () => root;
+    // a pretend "Save as" screen: it always says yes, and keeps what was written in window.__saved
+    window.__saved = {};
+    window.showSaveFilePicker = async ({ suggestedName }) => {
+      const parts = [];
+      return { kind: 'file', name: suggestedName,
+        async getFile() { return new File(parts, suggestedName); },
+        async createWritable() {
+          return { async write(c) { parts.push(c.slice()); }, async close() { window.__saved[suggestedName] = new Blob(parts); }, async abort() { parts.length = 0; } };
+        } };
+    };
   }, walk(ROOT));
 }
 

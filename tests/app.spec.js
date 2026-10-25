@@ -10,22 +10,25 @@ async function openBook(page, folder, name) {
   await page.locator('.pg canvas.ink').first().waitFor({ state: 'attached' });
 }
 
-test('the library lists folders and books, and skips other files', async ({ page }) => {
+test('the library lists folders and books, and shows other files it can’t open', async ({ page }) => {
   await openApp(page);
   await expect(page.locator('.tile')).toHaveText([/Books/, /Comics/]);
-  await expect(page.locator('.tile', { hasText: /notes|hidden/ })).toHaveCount(0);
+  await expect(page.locator('.others li')).toHaveCount(1);                       // hidden files and Thumbs.db stay hidden
+  await expect(page.locator('.others li')).toContainText('notes.txt');
+  await expect(page.locator('.others li')).toContainText('doesn’t read this kind of file');
   await page.locator('.tile.folder', { hasText: 'Books' }).click();
-  await expect(page.locator('.tile.book .name')).toHaveText(['Field Guide', 'Novel']);
+  await expect(page.locator('.tile.book .name')).toHaveText(['Field Guide', 'Locked', 'Novel']);
+  await expect(page.locator('.others')).toBeHidden();
   await expect(page.locator('.crumbs button')).toHaveText(['My Library', 'Books']);
 });
 
 test('covers are made for PDF, CBZ and EPUB', async ({ page }) => {
   await openApp(page);
   await page.locator('.tile.folder', { hasText: 'Books' }).click();
-  await expect(page.locator('.tile.book[data-cover="done"]')).toHaveCount(2);
+  await expect(page.locator('.tile.book[data-cover="done"]')).toHaveCount(2);   // the locked EPUB's cover is scrambled
   await page.locator('.crumbs button', { hasText: 'My Library' }).click();
   await page.locator('.tile.folder', { hasText: 'Comics' }).click();
-  await expect(page.locator('.tile.book[data-cover="done"]')).toHaveCount(1);
+  await expect(page.locator('.tile.book[data-cover="done"]')).toHaveCount(6);    // CBZ, CBR, CB7, EPUB, disguised zip, picture folder
 });
 
 test('comic pages are in natural order (page9 before page10), junk skipped', async ({ page }) => {
@@ -154,13 +157,82 @@ test('the place in a book is remembered and shown under Continue reading', async
   await expect(label(page)).toHaveText('3 / 3');
 });
 
-test('EPUB says it is coming next instead of failing', async ({ page }) => {
+test('a comic EPUB opens like a CBZ, picture pages only, and takes ink', async ({ page }) => {
+  await openApp(page);
+  await page.locator('.tile.folder', { hasText: 'Comics' }).click();
+  await expect(page.locator('.tile.book', { hasText: 'Humble Comic' })).toHaveAttribute('data-support', 'yes');
+  await openBook(page, null, 'Humble Comic');
+  await expect(label(page)).toHaveText('1 / 4');                 // the text credits page is left out
+  await page.keyboard.press('ArrowRight');
+  await expect(label(page)).toHaveText('2–3 / 4');
+  const box = await pageBox(page, 0);
+  await stroke(page, [[box.x + 60, box.y + 80], [box.x + 160, box.y + 140]]);
+  expect(await inked(page)).toBeGreaterThan(0);
+});
+
+test('text and copy-protected EPUBs are dimmed and say why when tapped', async ({ page }) => {
   await openApp(page);
   await page.locator('.tile.folder', { hasText: 'Books' }).click();
-  await page.locator('.tile.book', { hasText: 'Novel' }).click();
-  await expect(page.locator('.toast')).toContainText('EPUB reading is coming');
+  const novel = page.locator('.tile.book', { hasText: 'Novel' }), locked = page.locator('.tile.book', { hasText: 'Locked' });
+  await expect(novel).toHaveAttribute('data-support', 'no');
+  await expect(novel.locator('.badge')).toHaveText('Can’t open');
+  await expect(novel.locator('.why')).toHaveText('Text EPUB');
+  await expect(locked).toHaveAttribute('data-support', 'no');
+  await expect(locked.locator('.why')).toHaveText('Copy-protected');
+  await expect(page.locator('.tile.book', { hasText: 'Field Guide' })).toHaveAttribute('data-support', 'yes');
+  await locked.click();
+  await expect(page.locator('.toast')).toContainText('copy-protected (DRM)');
+  await novel.click();
+  await expect(page.locator('.toast')).toContainText('text EPUB');
   await expect(page.locator('#library')).toBeVisible();
   await expect(page.locator('.crumbs [aria-current]')).toHaveText('Books');   // still in the same folder
+});
+
+test('CBR, CB7, a zip named .cbr, and a folder of pictures all open as comics', async ({ page }) => {
+  await openApp(page);
+  await page.locator('.tile.folder', { hasText: 'Comics' }).click();
+  await expect(page.locator('.tile.folder')).toHaveText([/Minis/]);              // the picture folder became a comic
+  await expect(page.locator('.tile.book .name')).toHaveText(['Humble Comic', 'Loose Pages', 'Old Comic', 'Saga Vol 1', 'Seven', 'Zip In Disguise']);
+  await expect(page.locator('.others')).toBeHidden();
+  for (const [name, pages] of [['Old Comic', 3], ['Seven', 3], ['Zip In Disguise', 2], ['Loose Pages', 3]]) {
+    await openBook(page, null, name);
+    await expect(label(page)).toHaveText('1 / ' + pages);
+    await page.keyboard.press('End');
+    await expect(label(page)).toHaveText(pages === 3 ? '2–3 / 3' : '2 / 2');
+    await page.getByRole('button', { name: 'Back to the library' }).click();
+  }
+});
+
+test('Save as CBZ writes the pages in order and the copy keeps the notes', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Saga Vol 1');
+  await expect(page.getByRole('button', { name: 'Save as CBZ' })).toBeHidden();   // already a CBZ
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await openBook(page, null, 'Old Comic');
+  const b = await pageBox(page);
+  await stroke(page, [[b.x + 80, b.y + 90], [b.x + 200, b.y + 160]]);
+  await page.getByRole('button', { name: 'Save as CBZ' }).click();
+  await expect(page.locator('.rd-msg')).toContainText('Saved “Old Comic.cbz”. Your notes and place came along.');
+  const result = await page.evaluate(async () => {
+    const { readZip } = await import('/www/js/books.js');
+    const store = await import('/www/js/store.js');
+    const blob = window.__saved['Old Comic.cbz'];
+    const names = readZip(await blob.arrayBuffer()).entries.map((e) => e.name);
+    const ink = await store.get('ink', store.bookKey('Old Comic.cbz', blob.size));
+    return { names, strokes: ink ? ink.pages[0].length : 0 };
+  });
+  expect(result.names).toEqual(['001.png', '002.png', '003.png']);
+  expect(result.strokes).toBe(1);
+});
+
+test('a picture folder is remembered under Continue reading', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Loose Pages');
+  await page.keyboard.press('End');
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await page.locator('.crumbs button', { hasText: 'My Library' }).click();
+  await page.locator('.recent .tile', { hasText: 'Loose Pages' }).click();
+  await expect(label(page)).toHaveText('2–3 / 3');
 });
 
 test('the browser Back button closes the book, then goes up a folder', async ({ page }) => {

@@ -49,6 +49,15 @@ export async function touchBook(key, fields) {
   return rec;
 }
 
+/* a saved copy of a book (Save as CBZ) gets the same notes, place and cover as the original */
+export async function copyBook(from, to, fields) {
+  const [ink, rec, cover] = await Promise.all([get('ink', from), get('books', from), get('covers', from)]);
+  if (ink) await put('ink', to, ink);
+  if (cover) await put('covers', to, cover);
+  const { page, pages, inked } = rec || {};
+  await touchBook(to, { page, pages, inked, ...fields });
+}
+
 /* small settings: localStorage, which can throw or be empty, so every read has a default */
 export function setting(name, def) {
   try { const v = localStorage.getItem('pal-' + name); return v === null ? def : JSON.parse(v); } catch { return def; }
