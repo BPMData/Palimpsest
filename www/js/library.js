@@ -3,10 +3,12 @@
    and kept in the database, so a big collection is slow only the first time it's browsed. */
 
 import * as store from './store.js';
-import { makeCover, EPUB_WHY } from './books.js';
+import { kindOf } from './source.js';
+import { makeCover, EPUB_WHY, ARCHIVES, isPicture, comicPages } from './books.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const title = (name) => name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+const baseName = (e) => (e.kind === 'pics' ? e.name : e.name.replace(/\.[^.]+$/, ''));
 const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toLowerCase();
 
 /* Can Palimpsest handle this file? Every file in a folder is shown; the ones it can't handle say why.
@@ -15,13 +17,23 @@ const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toLowerC
    'no'   can't open it
    '?'    an EPUB not looked inside yet (that happens when its cover is made) */
 const OTHER_WHY = [
-  [/^(cbr|cb7|rar|7z|cbt|tar)$/, 'A RAR/7z comic. Repack it as a CBZ (a plain zip) and Palimpsest can open it.'],
+  [/^(rar|7z|tar)$/, 'An archive. If it holds a comic, rename it to .cbr (RAR), .cb7 (7-Zip) or .cbt (tar) and Palimpsest can open it.'],
   [/^(mobi|azw\d?|kfx|prc)$/, 'A Kindle book. Convert it to EPUB (Calibre does this).'],
-  [/^(jpe?g|png|webp|gif|avif|bmp|tiff?|heic)$/, 'A loose picture, not a book. Zip a folder of pages into a CBZ to read it as a comic.'],
+  [/^(jpe?g|png|webp|gif|avif|bmp|tiff?|heic)$/, 'A loose picture, not a book. (A folder of just pictures shows as a comic.)'],
   [/^(djvu|xps|fb2|lit|docx?|odt|rtf|txt|md|html?)$/, 'Palimpsest doesn’t read this kind of file.'],
 ];
+/* A folder of just pictures reads as a comic. A few other files are fine (up to 2, or a fifth), like ComicInfo.xml.
+   Its notes are kept under its name plus the pictures' total size, like a file's. */
+export function pictureFolder(d, list) {
+  const files = list.filter((x) => !x.dir), pics = comicPages({ entries: files.filter((x) => isPicture(x.name)) });
+  if (list.some((x) => x.dir) || files.some((x) => x.kind !== 'other') || pics.length < 2 || files.length - pics.length > Math.max(2, files.length * 0.2)) return null;
+  return { dir: false, kind: 'pics', name: d.name, size: pics.reduce((n, x) => n + (x.size || 0), 0), ref: d.ref, pages: pics };
+}
+/* what openBook and makeCover need: a file's bytes, or for a picture folder, its pages and a way to read them */
+export const bookInput = (source, e) => (e.kind === 'pics' ? Promise.resolve({ pages: e.pages, read: source.read }) : source.read(e));
+
 export function support(e, rec) {
-  if (e.kind === 'pdf' || e.kind === 'cbz') return { can: 'yes' };
+  if (e.kind === 'pdf' || e.kind === 'cbz' || e.kind === 'pics' || ARCHIVES.has(e.kind)) return { can: 'yes' };
   if (e.kind === 'epub') {
     const st = rec && rec.epub;
     if (!st) return { can: '?' };
@@ -38,14 +50,14 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
       <nav class="crumbs" aria-label="Folders"></nav>
       <div class="lib-actions">
         <input class="filter" type="search" placeholder="Find in this folder" aria-label="Find in this folder" hidden>
-        <button class="btn quiet" data-act="file" title="Open one PDF, CBZ or EPUB file">Open a file</button>
+        <button class="btn quiet" data-act="file" title="Open one PDF, comic (CBZ, CBR, CB7) or EPUB file">Open a file</button>
         <button class="btn quiet" data-act="change" hidden>Change folder</button>
       </div>
     </header>
     <main class="lib-body">
       <section class="welcome" hidden>
         <h2>Your comics and books, with a pen.</h2>
-        <p>Pick the folder where you keep your PDFs, CBZ comics and EPUBs. Palimpsest only reads that folder, and your notes stay on this device.</p>
+        <p>Pick the folder where you keep your PDFs, comics and EPUBs. Palimpsest only reads that folder, and your notes stay on this device.</p>
         <button class="btn big" data-act="pick">Choose your library folder</button>
         <p class="hint web-only" hidden>This browser can’t open folders. Use <b>Open a file</b> above, or Chrome or Edge on a computer.</p>
       </section>
@@ -58,13 +70,14 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
       <section class="folder"><div class="folders"></div><div class="grid"></div><p class="empty" hidden></p>
         <div class="others" hidden><h2>Other files <span>Palimpsest can’t open these</span></h2><ul></ul></div></section>
     </main>
-    <input type="file" class="one-file" accept=".pdf,.cbz,.epub,application/pdf,application/epub+zip" hidden>
+    <input type="file" class="one-file" accept=".pdf,.cbz,.cbr,.cb7,.cbt,.epub,application/pdf,application/epub+zip" hidden>
     <div class="toast" role="status" hidden></div>`;
 
   const $ = (s) => root.querySelector(s);
   const grid = $('.grid'), folders = $('.folders'), crumbs = $('.crumbs'), filter = $('.filter'), empty = $('.empty');
   let rootDir = null, stack = [], entries = [], urls = [];   // stack: [{ name, ref }] from the library folder down
-  let observer = null;
+  let observer = null, cbzHere = new Set();
+  const folderKinds = new Map();   // folder path -> picture-folder entry or null, looked at once per session
 
   /* ---------- covers ---------- */
   const queue = [], busy = new Set(), LIMIT = source.native ? 1 : 2;
@@ -72,7 +85,7 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     const e = tile._entry, k = store.bookKey(e.name, e.size);
     const cached = await store.get('covers', k).catch(() => null);
     if (cached && (e.kind !== 'epub' || support(e, tile._rec).can !== '?')) return cached;
-    const { cover, status } = await makeCover(e.kind, await source.read(e));
+    const { cover, status } = await makeCover(e.kind, await bookInput(source, e));
     if (cover) await store.put('covers', k, cover).catch(() => {});
     if (e.kind === 'epub') {   // remember what kind of EPUB it is, and show it on the tile
       tile._rec = await store.touchBook(k, { epub: status }).catch(() => ({ ...tile._rec, epub: status }));
@@ -123,7 +136,9 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     const s = support(b._entry, b._rec);
     b.dataset.support = s.can;
     b.querySelector('.badge').textContent = s.can === 'no' ? 'Can’t open' : s.can === 'view' ? 'No notes' : '';
-    b.querySelector('.why').textContent = s.short || '';
+    const copied = (ARCHIVES.has(b._entry.kind) || b._entry.kind === 'pics') && cbzHere.has(baseName(b._entry).toLowerCase() + '.cbz');
+    b.dataset.copied = copied ? 'yes' : '';
+    b.querySelector('.why').textContent = s.short || (copied ? 'Saved as CBZ' : '');
     b.title = b._entry.name + (s.why ? '\n' + s.why : '');
   }
   function otherRow(e) {
@@ -131,6 +146,33 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     li.innerHTML = `<span class="ext">${esc(extOf(e.name).toUpperCase().slice(0, 5) || 'FILE')}</span><span class="nm">${esc(e.name)}</span><span class="why">${esc(s.why)}</span>`;
     li.title = e.name;
     return li;
+  }
+  /* look inside a folder; if it's just pictures, its tile becomes a comic */
+  const folderQueue = [];
+  let folderBusy = 0;
+  function checkFolder(tile, d, path) {
+    folderQueue.push({ tile, d, path });
+    pumpFolders();
+  }
+  function pumpFolders() {
+    while (folderBusy < 2 && folderQueue.length) {
+      const { tile, d, path } = folderQueue.shift();
+      if (!tile.isConnected) continue;
+      folderBusy++;
+      const known = folderKinds.has(path) ? Promise.resolve(folderKinds.get(path)) : source.list(d.ref).then((l) => pictureFolder(d, l), () => null);
+      known.then(async (pics) => {
+        folderKinds.set(path, pics);
+        if (!pics || !tile.isConnected) return;
+        const recs = await store.get('books', store.bookKey(pics.name, pics.size)).catch(() => null);
+        const book = bookTile(pics, recs);
+        const after = [...grid.children].find((t) => t._entry && t._entry.name.localeCompare(pics.name, undefined, { numeric: true, sensitivity: 'base' }) > 0);
+        grid.insertBefore(book, after || null);
+        tile.remove();
+        folders.hidden = !folders.children.length;
+        empty.hidden = true;
+        watch(book);
+      }).finally(() => { folderBusy--; pumpFolders(); });
+    }
   }
   function folderTile(d) {
     const b = document.createElement('button');
@@ -149,9 +191,17 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     const shown = q ? entries.filter((e) => e.name.toLowerCase().includes(q)) : entries;
     const recs = new Map((await store.all('books').catch(() => [])).map((r) => [r.key, r]));
     const others = $('.others'), otherList = $('.others ul');
-    grid.textContent = ''; folders.textContent = ''; otherList.textContent = '';
+    grid.textContent = ''; folders.textContent = ''; otherList.textContent = ''; folderQueue.length = 0;
+    cbzHere = new Set(entries.filter((e) => e.kind === 'cbz').map((e) => e.name.toLowerCase()));
+    const where = stack.map((s) => s.name).join('/');
     for (const e of shown) {
-      if (e.dir) { folders.append(folderTile(e)); continue; }
+      if (e.dir) {
+        const pics = folderKinds.get(where + '/' + e.name);
+        if (pics) { const t = bookTile(pics, recs.get(store.bookKey(pics.name, pics.size))); grid.append(t); watch(t); continue; }
+        const t = folderTile(e); folders.append(t);
+        if (!folderKinds.has(where + '/' + e.name)) checkFolder(t, e, where + '/' + e.name);
+        continue;
+      }
       if (e.kind === 'other') { otherList.append(otherRow(e)); continue; }
       const tile = bookTile(e, recs.get(store.bookKey(e.name, e.size)));
       grid.append(tile);
@@ -202,22 +252,31 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
 
   /* ---------- opening ---------- */
   function locOf(e) {
-    if (source.native) return { uri: e.ref.uri };
-    return { path: stack.slice(1).map((s) => s.name).concat(e.name) };
+    const dir = e.kind === 'pics' ? { dir: true } : {};
+    if (source.native) return e.kind === 'pics' ? { docId: e.ref.docId, ...dir } : { uri: e.ref.uri };
+    return { path: stack.slice(1).map((s) => s.name).concat(e.name), ...dir };
   }
   function open(e) {
-    onOpen({ ...e, path: stack.slice(1).map((s) => s.name).concat(e.name).join('/'), loc: locOf(e) });
+    onOpen({ ...e, path: stack.slice(1).map((s) => s.name).concat(e.name).join('/'), loc: locOf(e), folder: stack[stack.length - 1].ref });
   }
   async function reopen(r) {
     try {
-      let ref;
+      let ref, folder = null;
       if (r.loc.uri) ref = { uri: r.loc.uri };
+      else if (r.loc.docId) ref = { docId: r.loc.docId };
       else {
         let dir = rootDir.ref;
         for (const seg of r.loc.path.slice(0, -1)) dir = await dir.getDirectoryHandle(seg);
-        ref = await dir.getFileHandle(r.loc.path[r.loc.path.length - 1]);
+        const last = r.loc.path[r.loc.path.length - 1];
+        folder = dir;
+        ref = r.loc.dir ? await dir.getDirectoryHandle(last) : await dir.getFileHandle(last);
       }
-      onOpen({ dir: false, name: r.name, size: r.size, kind: r.kind, ref, path: r.path, loc: r.loc });
+      if (r.loc.dir) {   // a picture folder: look at its pictures again
+        const pics = pictureFolder({ name: r.name, ref }, await source.list(ref));
+        if (!pics) throw new Error('moved');
+        return onOpen({ ...pics, path: r.path, loc: r.loc, folder });
+      }
+      onOpen({ dir: false, name: r.name, size: r.size, kind: r.kind, ref, path: r.path, loc: r.loc, folder });
     } catch { toast('“' + title(r.name) + '” has moved. Find it in its folder.'); }
   }
 
@@ -261,9 +320,9 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
   });
   $('.one-file').addEventListener('change', () => {
     const f = $('.one-file').files[0]; if (!f) return;
-    const kind = (/\.(pdf|cbz|epub|zip)$/i.exec(f.name) || [])[1];
-    if (!kind) return toast('Palimpsest opens PDF, CBZ and EPUB files.');
-    onOpen({ dir: false, name: f.name, size: f.size, kind: kind.toLowerCase() === 'zip' ? 'cbz' : kind.toLowerCase(), ref: null, file: f, path: f.name, loc: null });
+    const kind = kindOf(f.name);
+    if (!kind) return toast('Palimpsest opens PDF, comic (CBZ, CBR, CB7, CBT) and EPUB files.');
+    onOpen({ dir: false, name: f.name, size: f.size, kind, ref: null, file: f, path: f.name, loc: null });
   });
   filter.addEventListener('input', () => render());
 

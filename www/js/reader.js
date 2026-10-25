@@ -18,15 +18,17 @@ const PEN_SIZES = [1.2, 2, 3, 4.5, 7, 10];      // page units (page width = 1000
 const HL_SIZES = [10, 16, 24, 34];
 const ERASER_PX = 28;                              // eraser size on screen, whatever the zoom
 const MAX_ZOOM = 6;
+const SAVES_AS_CBZ = new Set(['cbr', 'cb7', 'cbt', 'pics']);   // slow or loose comics worth saving as a CBZ
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
-export function makeReader(root, { onClose, onBack }) {
+export function makeReader(root, { onClose, onBack, onSave }) {
   root.innerHTML = `
     <div class="stage" tabindex="-1"><div class="spread"></div><div class="rd-msg" hidden></div></div>
     <header class="rd-top">
       <button class="rd-back" data-act="back" aria-label="Back to the library" title="Back to the library">‹ <span>Library</span></button>
       <div class="rd-title"></div>
+      <button class="btn quiet rd-save" data-act="save" hidden title="Save a copy as a CBZ: it opens faster, and other comic apps can read it. Your notes come along.">Save as CBZ</button>
       <div class="rd-page" aria-live="polite"></div>
     </header>
     <footer class="rd-bottom">
@@ -109,6 +111,7 @@ export function makeReader(root, { onClose, onBack }) {
     if (b.dataset.color) { if (S.tool === 'hl') S.hlColor = b.dataset.color; else { S.penColor = b.dataset.color; if (S.tool === 'eraser') S.tool = 'pen'; } return syncTools(); }
     const a = b.dataset.act;
     if (a === 'back') onBack();
+    else if (a === 'save') onSave(entry, book);
     else if (a === 'smaller' || a === 'bigger') {
       const d = a === 'bigger' ? 1 : -1;
       if (S.tool === 'hl') S.hlSize = Math.max(0, Math.min(HL_SIZES.length - 1, S.hlSize + d));
@@ -374,13 +377,15 @@ export function makeReader(root, { onClose, onBack }) {
   let flashTimer = null;
   function flash(text) { showMsg(text); clearTimeout(flashTimer); flashTimer = setTimeout(() => { msg.hidden = true; }, 1200); }
   function showMsg(text) { msg.textContent = text; msg.hidden = false; }
+  function say(text) { showMsg(text); clearTimeout(flashTimer); flashTimer = setTimeout(() => { msg.hidden = true; }, 4000); }
 
   /* ---------- open / close ---------- */
   async function open(e, bytes) {
     entry = e; key = store.bookKey(e.name, e.size);
-    titleEl.textContent = e.name.replace(/\.[^.]+$/, '');
+    titleEl.textContent = e.kind === 'pics' ? e.name : e.name.replace(/\.[^.]+$/, '');
     root.hidden = false; msg.hidden = true; spreadEl.textContent = ''; chrome = true; root.classList.remove('bare');
     book = await openBook(e.kind, bytes);
+    $('.rd-save', root).hidden = !SAVES_AS_CBZ.has(book.kind);
     ink = makeInk(key);
     await ink.load();
     unlisten = ink.onChange(syncTools);
@@ -401,7 +406,7 @@ export function makeReader(root, { onClose, onBack }) {
   }
 
   syncTools();
-  return { open, close, isOpen: () => !!book, go: (i) => go(i), get page() { return first; }, flush: () => ink && ink.flush() };
+  return { open, close, say, isOpen: () => !!book, go: (i) => go(i), get page() { return first; }, flush: () => ink && ink.flush() };
 }
 
 /* small line icons, drawn here so the app needs no icon font or image files */

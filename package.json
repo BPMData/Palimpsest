@@ -15,6 +15,7 @@
     "@capacitor/cli": "^8.5.3",
     "@playwright/test": "^1.64.1",
     "fflate": "^0.8.3",
+    "libarchive.js": "^2.0.2",
     "pdfjs-dist": "^4.10.38"
   },
   "private": true

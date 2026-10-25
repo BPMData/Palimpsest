@@ -7,6 +7,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
+import android.util.Base64;
 
 import androidx.activity.result.ActivityResult;
 
@@ -24,6 +25,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * The library folder, through Android's own folder picker (the Storage Access Framework).
@@ -35,11 +39,22 @@ import java.util.Comparator;
  *   hasAccess({ treeUri })       -> { ok }  (false if the folder was deleted or permission was taken back)
  *   list({ treeUri, docId })     -> { items: [{ docId, name, dir, size, modified, uri }] }
  *   copyToCache({ uri })         -> { path }  (fallback when the web view can't stream the file directly)
+ *
+ * Saving a copy ("Save as CBZ"), through Android's own "Save as" screen (ACTION_CREATE_DOCUMENT).
+ * The app gets permission to write only the one new file the reader names there; the library folder stays read-only.
+ * Android never overwrites a file this way (it adds " (1)" to the name instead).
+ *   saveStart({ name, mime, treeUri?, docId? }) -> { id, name }   (rejects "cancelled" if the reader backs out)
+ *   saveChunk({ id, data })      data: base64; pieces arrive in order
+ *   saveFinish({ id })           -> { name, uri }
+ *   saveAbort({ id })            deletes the half-written file
  */
 @CapacitorPlugin(name = "Library")
 public class LibraryPlugin extends Plugin {
 
     private static final int KEEP_IN_CACHE = 3;   // copies of recently opened books kept by copyToCache
+
+    private static class Save { Uri uri; OutputStream out; }
+    private final Map<String, Save> saves = new HashMap<>();
 
     @PluginMethod
     public void pickFolder(PluginCall call) {
@@ -157,5 +172,98 @@ public class LibraryPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("path", out.getAbsolutePath());
         call.resolve(ret);
+    }
+
+    /* ---------- Save as ---------- */
+
+    @PluginMethod
+    public void saveStart(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(call.getString("mime", "application/octet-stream"));
+        intent.putExtra(Intent.EXTRA_TITLE, call.getString("name", "Comic.cbz"));
+        String treeUri = call.getString("treeUri"), docId = call.getString("docId");
+        if (treeUri != null && docId != null) {   // open the screen in the folder being browsed
+            intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, DocumentsContract.buildDocumentUriUsingTree(Uri.parse(treeUri), docId));
+        }
+        startActivityForResult(call, intent, "savePicked");
+    }
+
+    @ActivityCallback
+    private void savePicked(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        Intent data = result.getData();
+        if (data == null || data.getData() == null) { call.reject("cancelled"); return; }
+        Uri uri = data.getData();
+        ContentResolver cr = getContext().getContentResolver();
+        Save save = new Save();
+        save.uri = uri;
+        try {
+            save.out = cr.openOutputStream(uri, "wt");
+            if (save.out == null) throw new Exception("no stream");
+        } catch (Exception e) {
+            deleteQuietly(uri);
+            call.reject("Android didn't let Palimpsest write that file.", e);
+            return;
+        }
+        String id = UUID.randomUUID().toString(), name = call.getString("name", "");
+        try (Cursor c = cr.query(uri, new String[] { Document.COLUMN_DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst() && c.getString(0) != null) name = c.getString(0);
+        } catch (Exception ignored) {}
+        synchronized (saves) { saves.put(id, save); }
+        JSObject ret = new JSObject();
+        ret.put("id", id);
+        ret.put("name", name);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void saveChunk(PluginCall call) {
+        Save save;
+        synchronized (saves) { save = saves.get(call.getString("id", "")); }
+        if (save == null) { call.reject("That save was already finished or stopped."); return; }
+        try {
+            save.out.write(Base64.decode(call.getString("data", ""), Base64.DEFAULT));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Could not write the file: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void saveFinish(PluginCall call) {
+        Save save;
+        synchronized (saves) { save = saves.remove(call.getString("id", "")); }
+        if (save == null) { call.reject("That save was already finished or stopped."); return; }
+        try {
+            save.out.close();
+        } catch (Exception e) {
+            deleteQuietly(save.uri);
+            call.reject("Could not finish the file: " + e.getMessage(), e);
+            return;
+        }
+        String name = null;
+        try (Cursor c = getContext().getContentResolver().query(save.uri, new String[] { Document.COLUMN_DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst()) name = c.getString(0);
+        } catch (Exception ignored) {}
+        JSObject ret = new JSObject();
+        if (name != null) ret.put("name", name);
+        ret.put("uri", save.uri.toString());
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void saveAbort(PluginCall call) {
+        Save save;
+        synchronized (saves) { save = saves.remove(call.getString("id", "")); }
+        if (save != null) {
+            try { save.out.close(); } catch (Exception ignored) {}
+            deleteQuietly(save.uri);
+        }
+        call.resolve();
+    }
+
+    private void deleteQuietly(Uri uri) {
+        try { DocumentsContract.deleteDocument(getContext().getContentResolver(), uri); } catch (Exception ignored) {}
     }
 }

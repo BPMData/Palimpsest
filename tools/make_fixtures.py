@@ -1,15 +1,18 @@
 """Makes the small test library in tests/fixtures/library/ (comics, a PDF, EPUBs, and files it can't open).
 Run it from anywhere (in Thonny: just press Run). It overwrites the old fixtures.
-Needs Pillow and reportlab:  pip install pillow reportlab
+Needs Pillow, reportlab and py7zr:  pip install pillow reportlab py7zr
 """
 
 import io
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.pdfgen import canvas
+import py7zr
 
 # ---- settings ----
 LIBRARY = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "library"
@@ -116,6 +119,41 @@ def make_comic_epub(path, pages, label):
             z.writestr(f"OEBPS/images/p{n:03}.png", page_png(n, label))
 
 
+def make_rar(path, pages, label):
+    """A real RAR (version 4) comic. RAR is a closed format and there's no free tool that writes it, so this
+    writes the simplest kind by hand: pictures stored as they are, not squeezed. Enough to test the reading."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def block(head_type, flags, body, extra=b""):
+        size = 7 + len(body)
+        rest = struct.pack("<BHH", head_type, flags, size) + body
+        return struct.pack("<H", zlib.crc32(rest) & 0xFFFF) + rest + extra
+
+    out = bytearray(b"Rar!\x1a\x07\x00")                     # the RAR 4 marker
+    out += block(0x73, 0, struct.pack("<HI", 0, 0))              # archive header
+    for n in reversed(range(1, pages + 1)):                       # out of order on purpose, like the CBZ
+        data, name = page_png(n, label), f"{label}/page{n}.png".encode()
+        body = struct.pack("<IIBIIBBHI", len(data), len(data), 2, zlib.crc32(data), 0x5A210000, 20, 0x30, len(name), 0x20) + name
+        out += block(0x74, 0x8000, body, data)                    # 0x8000: data follows; 0x30: stored
+    out += bytes.fromhex("C43D7B00400700")                        # end of archive
+    path.write_bytes(bytes(out))
+
+
+def make_7z(path, pages, label):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with py7zr.SevenZipFile(path, "w") as z:
+        for n in range(1, pages + 1):
+            z.writestr(page_png(n, label), f"{label}/page{n}.png")
+
+
+def make_picture_folder(folder, pages, label):
+    """Loose pages in a folder, plus one small file that isn't a picture (it should still read as a comic)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for n in range(1, pages + 1):
+        (folder / f"{label} {n:02}.png").write_bytes(page_png(n, label))
+    (folder / "info.nfo").write_text("scanned by nobody")
+
+
 def make_locked_epub(path):
     """A copy-protected EPUB as Adobe's DRM makes them: rights.xml, and its pages listed in encryption.xml.
     The 'encrypted' files are just random bytes."""
@@ -138,7 +176,10 @@ if __name__ == "__main__":
     make_epub(LIBRARY / "Books" / "Novel.epub")
     make_comic_epub(LIBRARY / "Comics" / "Humble Comic.epub", EPUB_COMIC_PAGES, "Humble")
     make_locked_epub(LIBRARY / "Books" / "Locked.epub")
-    (LIBRARY / "Comics" / "Old Comic.cbr").write_bytes(b"Rar!\x1a\x07\x00 not really")
+    make_rar(LIBRARY / "Comics" / "Old Comic.cbr", 3, "Rar")
+    make_7z(LIBRARY / "Comics" / "Seven.cb7", 3, "Seven")
+    make_cbz(LIBRARY / "Comics" / "Zip In Disguise.cbr", 2, "Disguise")   # a zip with a .cbr name, which is common
+    make_picture_folder(LIBRARY / "Comics" / "Loose Pages", 3, "Loose")
     (LIBRARY / "notes.txt").write_text("not a book")
     (LIBRARY / "Thumbs.db").write_bytes(b"junk the computer made")
     (LIBRARY / ".hidden.pdf").write_bytes(b"%PDF-1.4 hidden")
