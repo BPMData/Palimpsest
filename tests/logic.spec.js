@@ -209,3 +209,33 @@ test.describe('archives', () => {
     expect(await count(page, 'Trouble/Broken.cbr', 'cbr')).toContain('couldn’t unpack');
   });
 });
+
+test.describe('restoring a backup never loses notes', () => {
+  async function merge(page, here, backup) {
+    return page.evaluate(async ({ here, backup }) => (await import('/www/js/backup.js')).mergeStrokes(here, backup), { here, backup });
+  }
+  const s = (n) => ({ c: '#000', w: 2, p: [n, n, n + 1, n + 1] });
+  test('a backup made earlier: what’s here already has it all', async ({ page }) => {
+    expect(await merge(page, [s(1), s(2), s(3)], [s(1), s(2)])).toEqual([s(1), s(2), s(3)]);
+  });
+  test('a backup with more on it: the backup has it all', async ({ page }) => {
+    expect(await merge(page, [s(1)], [s(1), s(2)])).toEqual([s(1), s(2)]);
+  });
+  test('different notes on each side: both are kept, nothing doubled', async ({ page }) => {
+    expect(await merge(page, [s(1), s(2)], [s(1), s(3)])).toEqual([s(1), s(2), s(3)]);
+  });
+  test('nothing here yet', async ({ page }) => {
+    expect(await merge(page, undefined, [s(5)])).toEqual([s(5)]);
+  });
+  test('files that aren’t backups, or come from a newer app, are turned away kindly', async ({ page }) => {
+    const why = await page.evaluate(async () => {
+      const { readBackup } = await import('/www/js/backup.js');
+      const t = (x) => { try { readBackup(x); return 'ok'; } catch (e) { return e.message; } };
+      return [t('not json'), t('{"app":"Other"}'), t(JSON.stringify({ app: 'Palimpsest', what: 'notes', v: 99, books: [] })), t(JSON.stringify({ app: 'Palimpsest', what: 'notes', v: 1, books: [] }))];
+    });
+    expect(why[0]).toContain('isn’t a Palimpsest backup');
+    expect(why[1]).toContain('isn’t a Palimpsest backup');
+    expect(why[2]).toContain('newer Palimpsest');
+    expect(why[3]).toBe('ok');
+  });
+});

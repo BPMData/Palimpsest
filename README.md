@@ -9,6 +9,7 @@ An e-reader that fucking lets you fucking annotate your own shit fucking properl
 - **Shows every file, even ones it can't open.** A copy-protected or text EPUB is dimmed and says why; a Kindle book or other file is listed under **Other files** with a hint.
 - **Write on the page with your stylus.** Pen, highlighter (it goes *under* the printed lines, so they stay readable) and eraser; the pen's eraser end works too. Undo and redo. Notes stay on your device and stay put when you zoom.
 - **Fingers turn pages, the pen writes.** Tap the edges or swipe to turn, pinch or double-tap to zoom, tap the middle to hide the bars. No stylus? Turn on **Finger draws**.
+- **Back up your notes.** Your notes stay on the tablet. **Notes → Save a backup** writes them all to one file you can keep anywhere (Google Drive, your computer), and **Restore** brings them back on a reinstall or a new tablet, without ever throwing away notes already there. A dot on **Notes** means they've changed since your last backup.
 - **Private.** No account, no internet permission at all. It can only read the one folder you choose, and only writes a file when you save one through the system's own "Save as" screen.
 
 ## Install on your Android tablet

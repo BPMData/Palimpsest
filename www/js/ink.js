@@ -26,7 +26,7 @@ export function makeInk(bookKey) {
       if (!dirty) return Promise.resolve();
       dirty = false;
       const inked = Object.values(data.pages).some((s) => s.length);
-      return Promise.all([store.put('ink', bookKey, data), store.touchBook(bookKey, { inked })]).catch(() => { dirty = true; });
+      return Promise.all([store.put('ink', bookKey, data), store.touchBook(bookKey, { inked, inkedAt: Date.now() })]).catch(() => { dirty = true; });
     };
     if (now) return write();
     saveTimer = setTimeout(write, 600);
