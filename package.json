@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Palimpsest: a comic and ebook reader with pen annotation.",
   "scripts": {
-    "test": "playwright test",
+    "test": "playwright test --project=chromium",
+    "test:webkit": "playwright test --project=webkit",
     "sync": "cap sync android"
   },
   "license": "MIT",

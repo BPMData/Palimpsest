@@ -25,7 +25,7 @@ jobs:
       - name: Browser tests
         run: |
           npx playwright install --with-deps chromium
-          npx playwright test
+          npx playwright test --project=chromium
 
       - name: Build the APK
         run: |
@@ -37,3 +37,21 @@ jobs:
           name: palimpsest-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
+
+  # The same tests in Safari's engine, as an early warning for the iPad version.
+  # It reports, but a failure here doesn't stop the APK or block a merge (yet).
+  webkit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Browser tests in WebKit (Safari's engine)
+        run: |
+          npx playwright install --with-deps webkit
+          npx playwright test --project=webkit
