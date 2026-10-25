@@ -86,6 +86,25 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--gold); outl
 .tile.folder svg { width: 100%; height: 100%; fill: var(--panel-2); stroke: var(--gold); stroke-width: 1.3; }
 .tile.folder .name { font-weight: 600; -webkit-line-clamp: 1; }
 
+/* books Palimpsest can't open (dimmed, "Can't open") or can't write on ("No notes") */
+.tile .badge { position: absolute; top: 6px; left: 6px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+.tile .badge:empty, .tile .why:empty { display: none; }
+.tile .why { font-size: 12px; color: var(--muted); margin-top: -4px; }
+.tile[data-support="no"] .cover { filter: grayscale(1) brightness(0.7); }
+.tile[data-support="no"] .name { color: var(--muted); }
+.tile[data-support="no"] .badge { background: #2a2622; color: #f0e6da; border: 1px solid #8a7f72; }
+.tile[data-support="view"] .badge { background: var(--gold); color: #1a1612; }
+
+.others { margin-top: 34px; }
+.others h2 { font: italic 500 18px var(--serif); color: var(--muted); margin: 0 0 10px; }
+.others h2 span { font: 13px var(--sans); font-style: normal; margin-left: 6px; opacity: 0.8; }
+.others ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.others li { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); color: var(--muted); }
+.others li:first-child { border-top: 0; }
+.others .ext { grid-row: span 2; align-self: center; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 6px 0; border: 1px dashed var(--line); border-radius: 6px; }
+.others .nm { color: var(--text); opacity: 0.75; overflow-wrap: anywhere; }
+.others .why { font-size: 12px; }
+
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); max-width: min(560px, calc(100vw - 32px));
   background: var(--panel-2); border: 1px solid var(--line); padding: 12px 18px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 50;

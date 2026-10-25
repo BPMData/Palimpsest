@@ -4,7 +4,8 @@ An e-reader that fucking lets you fucking annotate your own shit fucking properl
 ## What it does
 
 - **Your library, as folders.** Pick the folder where you keep your comics and books once. Palimpsest shows its folders and covers, remembers your page in every book, and keeps a **Continue reading** row.
-- **Reads PDF and CBZ** comics, one page at a time or as two-page spreads in landscape (the cover on its own). EPUBs show in the library with their covers; reading them comes next.
+- **Reads PDF, CBZ and comic EPUBs** (the fixed-layout kind Humble Bundle and Kobo sell), one page at a time or as two-page spreads in landscape (the cover on its own). Text EPUBs (novels) come later.
+- **Shows every file, even ones it can't open.** A copy-protected or text EPUB is dimmed and says why; a CBR, Kindle book or other file is listed under **Other files** with a hint (for example, repack a CBR as a CBZ).
 - **Write on the page with your stylus.** Pen, highlighter (it goes *under* the printed lines, so they stay readable) and eraser; the pen's eraser end works too. Undo and redo. Notes stay on your device and stay put when you zoom.
 - **Fingers turn pages, the pen writes.** Tap the edges or swipe to turn, pinch or double-tap to zoom, tap the middle to hide the bars. No stylus? Turn on **Finger draws**.
 - **Private.** No account, no internet permission at all. It can only read the one folder you choose.

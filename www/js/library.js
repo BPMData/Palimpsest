@@ -3,10 +3,33 @@
    and kept in the database, so a big collection is slow only the first time it's browsed. */
 
 import * as store from './store.js';
-import { makeCover } from './books.js';
+import { makeCover, EPUB_WHY } from './books.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const title = (name) => name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toLowerCase();
+
+/* Can Palimpsest handle this file? Every file in a folder is shown; the ones it can't handle say why.
+   'yes'  opens, and you can write on it
+   'view' opens, but you can't write on it (nothing is like this yet; kept for text EPUBs later)
+   'no'   can't open it
+   '?'    an EPUB not looked inside yet (that happens when its cover is made) */
+const OTHER_WHY = [
+  [/^(cbr|cb7|rar|7z|cbt|tar)$/, 'A RAR/7z comic. Repack it as a CBZ (a plain zip) and Palimpsest can open it.'],
+  [/^(mobi|azw\d?|kfx|prc)$/, 'A Kindle book. Convert it to EPUB (Calibre does this).'],
+  [/^(jpe?g|png|webp|gif|avif|bmp|tiff?|heic)$/, 'A loose picture, not a book. Zip a folder of pages into a CBZ to read it as a comic.'],
+  [/^(djvu|xps|fb2|lit|docx?|odt|rtf|txt|md|html?)$/, 'Palimpsest doesn’t read this kind of file.'],
+];
+export function support(e, rec) {
+  if (e.kind === 'pdf' || e.kind === 'cbz') return { can: 'yes' };
+  if (e.kind === 'epub') {
+    const st = rec && rec.epub;
+    if (!st) return { can: '?' };
+    return st === 'ok' ? { can: 'yes' } : { can: 'no', why: EPUB_WHY[st], short: st === 'drm' ? 'Copy-protected' : st === 'text' ? 'Text EPUB' : 'Damaged' };
+  }
+  const ext = extOf(e.name);
+  return { can: 'no', why: (OTHER_WHY.find(([re]) => re.test(ext)) || [0, 'Not a book file.'])[1] };
+}
 
 export function makeLibrary(root, source, { onOpen, onNavigate }) {
   root.innerHTML = `
@@ -32,7 +55,8 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
         <button class="btn quiet" data-act="pick">Choose a different folder</button>
       </section>
       <section class="recent" hidden><h2>Continue reading</h2><div class="shelf"></div></section>
-      <section class="folder"><div class="folders"></div><div class="grid"></div><p class="empty" hidden></p></section>
+      <section class="folder"><div class="folders"></div><div class="grid"></div><p class="empty" hidden></p>
+        <div class="others" hidden><h2>Other files <span>Palimpsest can’t open these</span></h2><ul></ul></div></section>
     </main>
     <input type="file" class="one-file" accept=".pdf,.cbz,.epub,application/pdf,application/epub+zip" hidden>
     <div class="toast" role="status" hidden></div>`;
@@ -44,13 +68,17 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
 
   /* ---------- covers ---------- */
   const queue = [], busy = new Set(), LIMIT = source.native ? 1 : 2;
-  async function coverFor(e) {
-    const k = store.bookKey(e.name, e.size);
+  async function coverFor(tile) {
+    const e = tile._entry, k = store.bookKey(e.name, e.size);
     const cached = await store.get('covers', k).catch(() => null);
-    if (cached) return cached;
-    const blob = await makeCover(e.kind, await source.read(e));
-    if (blob) await store.put('covers', k, blob).catch(() => {});
-    return blob;
+    if (cached && (e.kind !== 'epub' || support(e, tile._rec).can !== '?')) return cached;
+    const { cover, status } = await makeCover(e.kind, await source.read(e));
+    if (cover) await store.put('covers', k, cover).catch(() => {});
+    if (e.kind === 'epub') {   // remember what kind of EPUB it is, and show it on the tile
+      tile._rec = await store.touchBook(k, { epub: status }).catch(() => ({ ...tile._rec, epub: status }));
+      markTile(tile);
+    }
+    return cover;
   }
   function pump() {
     while (busy.size < LIMIT && queue.length) {
@@ -58,7 +86,7 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
       if (!tile.isConnected || tile.dataset.cover) continue;
       busy.add(tile);
       tile.dataset.cover = 'loading';
-      coverFor(tile._entry).then((blob) => {
+      coverFor(tile).then((blob) => {
         if (!blob) { tile.dataset.cover = 'none'; return; }
         const u = URL.createObjectURL(blob); urls.push(u);
         const img = tile.querySelector('.cover');
@@ -78,14 +106,31 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
   /* ---------- drawing the folder ---------- */
   function bookTile(e, rec) {
     const b = document.createElement('button');
-    b.className = 'tile book'; b._entry = e;
+    b.className = 'tile book'; b._entry = e; b._rec = rec;
     const pct = rec && rec.pages ? Math.round(((rec.page || 0) + 1) / rec.pages * 100) : 0;
-    b.innerHTML = `<span class="cover" data-kind="${e.kind}"><span class="kind">${e.kind.toUpperCase()}</span>${rec && rec.inked ? '<span class="inked" title="Has your notes">✎</span>' : ''}</span>
-      <span class="name">${esc(title(e.name))}</span>
+    b.innerHTML = `<span class="cover" data-kind="${e.kind}"><span class="kind">${e.kind.toUpperCase()}</span>${rec && rec.inked ? '<span class="inked" title="Has your notes">✎</span>' : ''}<span class="badge"></span></span>
+      <span class="name">${esc(title(e.name))}</span><span class="why"></span>
       ${pct ? `<span class="progress" title="Page ${(rec.page || 0) + 1} of ${rec.pages}"><i style="width:${pct}%"></i></span>` : ''}`;
-    b.title = e.name;
-    b.addEventListener('click', () => open(e));
+    markTile(b);
+    b.addEventListener('click', () => {
+      const s = support(e, b._rec);
+      if (s.can === 'no') toast(s.why); else open(e);
+    });
     return b;
+  }
+  /* a book Palimpsest can't open (or can't write on) is dimmed, with a badge and the reason */
+  function markTile(b) {
+    const s = support(b._entry, b._rec);
+    b.dataset.support = s.can;
+    b.querySelector('.badge').textContent = s.can === 'no' ? 'Can’t open' : s.can === 'view' ? 'No notes' : '';
+    b.querySelector('.why').textContent = s.short || '';
+    b.title = b._entry.name + (s.why ? '\n' + s.why : '');
+  }
+  function otherRow(e) {
+    const li = document.createElement('li'), s = support(e);
+    li.innerHTML = `<span class="ext">${esc(extOf(e.name).toUpperCase().slice(0, 5) || 'FILE')}</span><span class="nm">${esc(e.name)}</span><span class="why">${esc(s.why)}</span>`;
+    li.title = e.name;
+    return li;
   }
   function folderTile(d) {
     const b = document.createElement('button');
@@ -103,15 +148,18 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     const q = filter.value.trim().toLowerCase();
     const shown = q ? entries.filter((e) => e.name.toLowerCase().includes(q)) : entries;
     const recs = new Map((await store.all('books').catch(() => [])).map((r) => [r.key, r]));
-    grid.textContent = ''; folders.textContent = '';
+    const others = $('.others'), otherList = $('.others ul');
+    grid.textContent = ''; folders.textContent = ''; otherList.textContent = '';
     for (const e of shown) {
       if (e.dir) { folders.append(folderTile(e)); continue; }
+      if (e.kind === 'other') { otherList.append(otherRow(e)); continue; }
       const tile = bookTile(e, recs.get(store.bookKey(e.name, e.size)));
       grid.append(tile);
       watch(tile);
     }
     folders.hidden = !folders.children.length;
-    empty.hidden = shown.length > 0;
+    others.hidden = !otherList.children.length;
+    empty.hidden = folders.children.length + grid.children.length > 0;
     empty.textContent = q ? 'Nothing here matches “' + filter.value.trim() + '”.' : 'No PDFs, comics or EPUBs in this folder.';
     await renderRecent();
   }

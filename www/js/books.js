@@ -52,7 +52,7 @@ async function openPdf(bytes) {
   };
 }
 
-/* ---------- zip (CBZ comics, and EPUB covers) ----------
+/* ---------- zip (CBZ comics and EPUBs) ----------
    Reads the zip's table of contents once, then unpacks only the pages that are shown. */
 const IMAGE = /\.(jpe?g|png|webp|gif|avif|bmp)$/i;
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif', bmp: 'image/bmp' };
@@ -108,8 +108,8 @@ export function comicPages(zip) {
   return zip.entries.filter((e) => IMAGE.test(e.name) && !/(^|\/)(__MACOSX|\.)/.test(e.name)).sort((a, b) => natural(a.name, b.name));
 }
 
-async function openCbz(bytes) {
-  const zip = readZip(bytes), pages = comicPages(zip);
+/* Pictures from a zip, one per page: CBZ comics, and comic EPUBs. Unpacks only the pages shown. */
+function openPictures(kind, zip, pages) {
   if (!pages.length) throw new Error('No pictures found in this comic.');
   const cache = new Map();   // page -> Promise<ImageBitmap>, the last few only
   function bitmap(i) {
@@ -120,7 +120,7 @@ async function openCbz(bytes) {
     return b;
   }
   return {
-    kind: 'cbz', count: pages.length,
+    kind, count: pages.length,
     async size(i) { const b = await bitmap(i); return { w: b.width, h: b.height }; },
     async draw(i, canvas, pxW) {
       const b = await bitmap(i);
@@ -136,10 +136,96 @@ async function openCbz(bytes) {
   };
 }
 
+/* ---------- EPUB ----------
+   Comic EPUBs (Humble Bundle, Kobo, most publishers) are "fixed layout": every page is a tiny web page
+   holding one full-page picture. Palimpsest reads those pictures in order, just like a CBZ.
+   Text EPUBs (novels) and copy-protected (DRM) EPUBs can't be opened yet; epubInfo says which is which. */
+const xml = (zip, e) => new DOMParser().parseFromString(new TextDecoder().decode(zip.data(e)), 'application/xml');
+const tags = (doc, name) => [...doc.getElementsByTagNameNS('*', name)];
+const dirOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '');
+function joinPath(base, href) {
+  let clean = href.split('#')[0].split('?')[0];
+  try { clean = decodeURIComponent(clean); } catch {}
+  const out = [];
+  for (const p of (base + clean).split('/')) { if (p === '..') out.pop(); else if (p && p !== '.') out.push(p); }
+  return out.join('/');
+}
+
+/* Fonts are often scrambled ("obfuscated") even in DRM-free books; anything else encrypted means DRM. */
+const FONT_SCRAMBLE = /idpf\.org\/2008\/embedding|ns\.adobe\.com\/pdf\/enc#RC/;
+function isLocked(zip) {
+  if (zip.find('META-INF/rights.xml') || zip.find('META-INF/sinf.xml')) return true;   // Adobe, Apple
+  const enc = zip.find('META-INF/encryption.xml');
+  if (!enc) return false;
+  return tags(xml(zip, enc), 'EncryptedData').some((d) => {
+    const alg = tags(d, 'EncryptionMethod')[0]?.getAttribute('Algorithm') || '';
+    const uri = tags(d, 'CipherReference')[0]?.getAttribute('URI') || '';
+    return !FONT_SCRAMBLE.test(alg) && !/\.(otf|ttf|woff2?)$/i.test(uri);
+  });
+}
+
+/* The one picture on a page (the biggest, if there are several), and how much text sits beside it. */
+function pagePicture(zip, path) {
+  const e = zip.find(path);
+  if (!e) return null;
+  if (IMAGE.test(path)) return { entry: e, words: 0 };
+  const doc = new DOMParser().parseFromString(new TextDecoder().decode(zip.data(e)), 'text/html');
+  const refs = [...doc.querySelectorAll('img[src]')].map((i) => i.getAttribute('src'))
+    .concat([...doc.getElementsByTagName('image')].map((i) => i.getAttribute('xlink:href') || i.getAttribute('href')));
+  const pics = refs.filter(Boolean).map((r) => zip.find(joinPath(dirOf(path), r))).filter((x) => x && IMAGE.test(x.name));
+  if (!pics.length) return null;
+  const words = (doc.body?.textContent || '').trim().length;
+  return { entry: pics.reduce((a, b) => (b.size > a.size ? b : a)), words };
+}
+
+/* What kind of EPUB this is: { status: 'comic' | 'text' | 'drm' | 'broken', pages, cover } */
+export function epubInfo(zip) {
+  if (isLocked(zip)) return { status: 'drm', pages: [], cover: null };
+  const container = zip.find('META-INF/container.xml');
+  const opfPath = container && tags(xml(zip, container), 'rootfile')[0]?.getAttribute('full-path');
+  const opfEntry = opfPath && zip.find(opfPath);
+  if (!opfEntry) return { status: 'broken', pages: [], cover: null };
+  const opf = xml(zip, opfEntry), base = dirOf(opfPath);
+  const items = tags(opf, 'item'), byId = new Map(items.map((i) => [i.getAttribute('id'), i]));
+  const metas = tags(opf, 'meta');
+  const fixed = metas.some((m) => m.getAttribute('property') === 'rendition:layout' && m.textContent.trim() === 'pre-paginated') ||
+    metas.some((m) => m.getAttribute('name') === 'fixed-layout' && m.getAttribute('content') === 'true');
+
+  const spine = tags(opf, 'itemref').map((r) => byId.get(r.getAttribute('idref'))).filter(Boolean);
+  const pages = []; let pictureOnly = 0;
+  for (const item of spine) {
+    const pic = pagePicture(zip, joinPath(base, item.getAttribute('href') || ''));
+    if (!pic) continue;   // a page with no picture, like a text credits page
+    pages.push(pic.entry);
+    if (pic.words < 100) pictureOnly++;
+  }
+  // a comic: the book says it's fixed layout, or nearly every page is just a picture
+  const comic = pages.length > 0 && (fixed || pictureOnly >= spine.length * 0.8);
+
+  const metaId = metas.find((m) => m.getAttribute('name') === 'cover')?.getAttribute('content');
+  const coverItem = items.find((i) => (i.getAttribute('properties') || '').split(/\s+/).includes('cover-image')) ||
+    (metaId && byId.get(metaId)) ||
+    items.find((i) => /cover/i.test(i.getAttribute('id') + i.getAttribute('href')) && IMAGE.test(i.getAttribute('href') || ''));
+  const cover = (coverItem && zip.find(joinPath(base, coverItem.getAttribute('href') || ''))) || pages[0] ||
+    zip.entries.filter((e) => IMAGE.test(e.name)).sort((a, b) => natural(a.name, b.name))[0] || null;
+  return { status: comic ? 'comic' : 'text', pages, cover };
+}
+
+/* why an EPUB can't be opened, in words for the reader */
+export const EPUB_WHY = {
+  text: 'This is a text EPUB (a novel or similar). Palimpsest reads comic EPUBs; text EPUBs come later.',
+  drm: 'This EPUB is copy-protected (DRM). Palimpsest can only open DRM-free files.',
+  broken: 'This EPUB looks damaged: its list of pages is missing.',
+};
+
 export async function openBook(kind, bytes) {
   if (kind === 'pdf') return openPdf(bytes);
-  if (kind === 'cbz') return openCbz(bytes);
-  if (kind === 'epub') throw new Error('EPUB reading is coming in the next version. For now Palimpsest reads PDF and CBZ.');
+  if (kind === 'cbz') { const zip = readZip(bytes); return openPictures('cbz', zip, comicPages(zip)); }
+  if (kind === 'epub') {
+    const zip = readZip(bytes), info = epubInfo(zip);
+    if (info.status !== 'comic') throw new Error(EPUB_WHY[info.status]);
+    return openPictures('epub', zip, info.pages);
+  }
   throw new Error('Palimpsest can’t open this kind of file.');
 }
 
@@ -154,44 +240,24 @@ async function toJpeg(source, w, h) {
   return new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.82));
 }
 
-function epubCoverEntry(zip) {
-  const text = (e) => new TextDecoder().decode(zip.data(e));
-  const container = zip.find('META-INF/container.xml');
-  if (container) {
-    const opfPath = (/full-path="([^"]+)"/.exec(text(container)) || [])[1];
-    const opfEntry = opfPath && zip.find(opfPath);
-    if (opfEntry) {
-      const opf = new DOMParser().parseFromString(text(opfEntry), 'application/xml');
-      const items = [...opf.getElementsByTagName('item')];
-      const metaId = [...opf.getElementsByTagName('meta')].find((m) => m.getAttribute('name') === 'cover')?.getAttribute('content');
-      const item = items.find((i) => (i.getAttribute('properties') || '').split(/\s+/).includes('cover-image')) ||
-        (metaId && items.find((i) => i.getAttribute('id') === metaId)) ||
-        items.find((i) => /cover/i.test(i.getAttribute('id') + i.getAttribute('href')) && IMAGE.test(i.getAttribute('href') || ''));
-      if (item) {
-        const base = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
-        const href = decodeURIComponent(item.getAttribute('href'));
-        const parts = (base + href).split('/'), out = [];
-        for (const p of parts) { if (p === '..') out.pop(); else if (p !== '.') out.push(p); }
-        const e = zip.find(out.join('/'));
-        if (e) return e;
-      }
-    }
-  }
-  return zip.entries.filter((e) => IMAGE.test(e.name)).sort((a, b) => natural(a.name, b.name))[0] || null;
-}
-
+/* A book's cover for the library, and whether Palimpsest can open it:
+   { cover: Blob | null, status: 'ok' | 'text' | 'drm' | 'broken' } (only EPUBs can be anything but 'ok') */
 export async function makeCover(kind, bytes, width = 320) {
   if (kind === 'pdf') {
     const book = await openPdf(bytes);
     try {
       const c = document.createElement('canvas');
       await book.draw(0, c, width);
-      return await toJpeg(c, c.width, c.height);
+      return { cover: await toJpeg(c, c.width, c.height), status: 'ok' };
     } finally { book.close(); }
   }
   const zip = readZip(bytes);
-  const entry = kind === 'epub' ? epubCoverEntry(zip) : comicPages(zip)[0];
-  if (!entry) return null;
-  const b = await bitmapOf(zip, entry);
-  try { return await toJpeg(b, width, width * b.height / b.width); } finally { b.close?.(); }
+  let entry = null, status = 'ok';
+  if (kind === 'epub') { const info = epubInfo(zip); entry = info.cover; status = info.status === 'comic' ? 'ok' : info.status; }
+  else entry = comicPages(zip)[0];
+  if (!entry) return { cover: null, status };
+  try {
+    const b = await bitmapOf(zip, entry);
+    try { return { cover: await toJpeg(b, width, width * b.height / b.width), status }; } finally { b.close?.(); }
+  } catch { return { cover: null, status }; }   // a locked book's cover is often scrambled too
 }

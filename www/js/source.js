@@ -4,7 +4,8 @@
    - Browser (desktop Chrome / Edge): the File System Access API (showDirectoryPicker).
    Both give the same shape:
      folder entry: { dir: true, name, ref }
-     book entry:   { dir: false, name, size, modified, kind: 'pdf' | 'cbz' | 'epub', ref } */
+     file entry:   { dir: false, name, size, modified, kind: 'pdf' | 'cbz' | 'epub' | 'other', ref }
+   Every file is listed, even ones Palimpsest can't open ('other'), so the reader can see they're there. */
 
 import * as store from './store.js';
 
@@ -13,7 +14,8 @@ export function kindOf(name) {
   const m = /\.([a-z0-9]+)$/i.exec(name || '');
   return m ? KINDS[m[1].toLowerCase()] || null : null;
 }
-const visible = (name) => !name.startsWith('.') && name !== '__MACOSX';
+const JUNK = new Set(['__macosx', 'thumbs.db', 'desktop.ini']);   // things the computer made, not the reader
+const visible = (name) => !name.startsWith('.') && !JUNK.has(name.toLowerCase());
 
 const byName = (a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 
@@ -38,9 +40,9 @@ function androidSource(Plugin, Cap) {
     },
     async list(ref) {
       const { items } = await Plugin.list({ treeUri: root.treeUri, docId: ref.docId });
-      return items.filter((it) => visible(it.name) && (it.dir || kindOf(it.name))).map((it) => it.dir
+      return items.filter((it) => visible(it.name)).map((it) => it.dir
         ? { dir: true, name: it.name, ref: { docId: it.docId } }
-        : { dir: false, name: it.name, size: it.size, modified: it.modified, kind: kindOf(it.name), ref: { uri: it.uri } }).sort(byName);
+        : { dir: false, name: it.name, size: it.size, modified: it.modified, kind: kindOf(it.name) || 'other', ref: { uri: it.uri } }).sort(byName);
     },
     async read(entry) {
       // Capacitor's web server streams content:// files to the web view directly
@@ -87,9 +89,9 @@ function webSource() {
       for await (const h of dir.values()) {
         if (!visible(h.name)) continue;
         if (h.kind === 'directory') out.push({ dir: true, name: h.name, ref: h });
-        else if (kindOf(h.name)) {
+        else {
           const f = await h.getFile();
-          out.push({ dir: false, name: h.name, size: f.size, modified: f.lastModified, kind: kindOf(h.name), ref: h });
+          out.push({ dir: false, name: h.name, size: f.size, modified: f.lastModified, kind: kindOf(h.name) || 'other', ref: h });
         }
       }
       return out.sort(byName);
