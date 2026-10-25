@@ -12,7 +12,7 @@ async function openBook(page, folder, name) {
 
 test('the library lists folders and books, and shows other files it can’t open', async ({ page }) => {
   await openApp(page);
-  await expect(page.locator('.tile')).toHaveText([/Books/, /Comics/]);
+  await expect(page.locator('.tile')).toHaveText([/Books/, /Comics/, /Trouble/]);
   await expect(page.locator('.others li')).toHaveCount(1);                       // hidden files and Thumbs.db stay hidden
   await expect(page.locator('.others li')).toContainText('notes.txt');
   await expect(page.locator('.others li')).toContainText('doesn’t read this kind of file');
@@ -245,6 +245,96 @@ test('the browser Back button closes the book, then goes up a folder', async ({ 
   await expect(page.locator('.crumbs [aria-current]')).toHaveText('My Library');
 });
 
+test('files that can’t be opened fail politely and say why', async ({ page }) => {
+  await openApp(page);
+  await page.locator('.tile.folder', { hasText: 'Trouble' }).click();
+  await expect(page.locator('.tile.book .name')).toHaveText(['Broken', 'Secret']);
+  await expect(page.locator('.others li')).toContainText('Kindle book');
+  await page.locator('.tile.book', { hasText: 'Broken' }).click();
+  await expect(page.locator('.toast')).toContainText('couldn’t unpack');
+  await expect(page.locator('#library')).toBeVisible();
+  await page.locator('.tile.book', { hasText: 'Secret' }).click();
+  await expect(page.locator('.toast')).toContainText('password-protected');
+  await expect(page.locator('.crumbs [aria-current]')).toHaveText('Trouble');
+});
+
+test('a CBR with a CBZ of the same name beside it says it was saved as CBZ', async ({ page }) => {
+  await openApp(page);
+  await page.locator('.tile.folder', { hasText: 'Comics' }).click();
+  await page.locator('.tile.folder', { hasText: 'Minis' }).click();
+  await expect(page.locator('.tile.book[title^="Tiny Tales.cbr"] .why')).toHaveText('Saved as CBZ');
+  await expect(page.locator('.tile.book[title^="Tiny Tales.cbz"] .why')).toHaveText('');
+  await expect(page.locator('.tile.book[data-copied="yes"]')).toHaveCount(1);
+});
+
+test('Save as CBZ only shows for comics worth converting', async ({ page }) => {
+  await openApp(page);
+  const save = page.getByRole('button', { name: 'Save as CBZ' });
+  for (const [folder, name, shown] of [['Books', 'Field Guide', false], ['Comics', 'Humble Comic', false], ['Comics', 'Seven', true], ['Comics', 'Loose Pages', true]]) {
+    await page.locator('.crumbs button', { hasText: 'My Library' }).click();
+    await openBook(page, folder, name);
+    if (shown) await expect(save).toBeVisible(); else await expect(save).toBeHidden();
+    await page.getByRole('button', { name: 'Back to the library' }).click();
+  }
+});
+
+test('a picture folder saves its pages in order', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Loose Pages');
+  await page.getByRole('button', { name: 'Save as CBZ' }).click();
+  await expect(page.locator('.rd-msg')).toContainText('Saved “Loose Pages.cbz”');
+  const names = await page.evaluate(async () => {
+    const { readZip } = await import('/www/js/books.js');
+    return readZip(await window.__saved['Loose Pages.cbz'].arrayBuffer()).entries.map((e) => e.name);
+  });
+  expect(names).toEqual(['001.png', '002.png', '003.png']);
+});
+
+test('backing out of Save as does nothing; a failed save says nothing was changed', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Old Comic');
+  const b = await pageBox(page);
+  await stroke(page, [[b.x + 80, b.y + 90], [b.x + 200, b.y + 160]]);
+  await page.evaluate(() => { window.__saveMode = 'cancel'; });
+  await page.getByRole('button', { name: 'Save as CBZ' }).click();
+  await page.waitForTimeout(300);
+  await expect(page.locator('.rd-msg')).toBeHidden();
+  await expect(page.locator('#busy')).toBeHidden();
+  await page.evaluate(() => { window.__saveMode = 'fail'; });
+  await page.getByRole('button', { name: 'Save as CBZ' }).click();
+  await expect(page.locator('.rd-msg')).toContainText('Could not save the CBZ: Disk full. Nothing was changed.');
+  await expect(page.locator('#busy')).toBeHidden();
+  const books = await page.evaluate(async () => (await import('/www/js/store.js')).all('books'));
+  expect(books.filter((r) => r.key.startsWith('Old Comic.cbz'))).toEqual([]);   // no notes for a copy that doesn't exist
+  expect(await inked(page)).toBeGreaterThan(0);                      // the notes on the original are untouched
+});
+
+test('Open a file reads a single comic without a library', async ({ page }) => {
+  await page.goto('/www/index.html');
+  await page.locator('.one-file').setInputFiles('tests/fixtures/library/Comics/Seven.cb7');
+  await expect(page.locator('#reader')).toBeVisible();
+  await expect(label(page)).toHaveText('1 / 3');
+});
+
+test('Clear page needs a second tap; Ctrl+Z undoes it; the slider jumps to a page', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Saga Vol 1');
+  const b = await pageBox(page);
+  await stroke(page, [[b.x + 80, b.y + 90], [b.x + 200, b.y + 160]]);
+  const n = await inked(page);
+  const clear = page.getByRole('button', { name: 'Clear page' });
+  await clear.click();
+  await expect(page.getByRole('button', { name: 'Sure?' })).toBeVisible();
+  expect(await inked(page)).toBe(n);                                 // one tap only asks
+  await page.getByRole('button', { name: 'Sure?' }).click();
+  expect(await inked(page)).toBe(0);
+  await page.keyboard.press('Control+z');
+  expect(await inked(page)).toBe(n);
+  await page.locator('.rd-scrub').fill('9');
+  await page.locator('.rd-scrub').dispatchEvent('change');
+  await expect(label(page)).toHaveText('8–9 / 11');
+});
+
 test('phone width: no sideways scrolling in the library or the reader', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page);
@@ -252,5 +342,11 @@ test('phone width: no sideways scrolling in the library or the reader', async ({
   await openBook(page, 'Comics', 'Saga Vol 1');
   const tools = await page.locator('.rd-bottom').boundingBox();
   expect(tools.width).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await openBook(page, null, 'Old Comic');                             // the top bar also has Save as CBZ here
+  const top = await page.locator('.rd-top').boundingBox();
+  expect(top.width).toBeLessThanOrEqual(390);
+  await expect(page.getByRole('button', { name: 'Save as CBZ' })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

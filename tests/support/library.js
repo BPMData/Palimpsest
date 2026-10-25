@@ -27,14 +27,16 @@ async function useLibrary(page) {
     }
     const root = dirHandle('My Library', tree, '/tests/fixtures/library/');
     window.showDirectoryPicker = async () => root;
-    // a pretend "Save as" screen: it always says yes, and keeps what was written in window.__saved
-    window.__saved = {};
+    // a pretend "Save as" screen. It says yes and keeps what was written in window.__saved,
+    // unless a test sets window.__saveMode to 'cancel' (the reader backs out) or 'fail' (the disk fills up).
+    window.__saved = {}; window.__saveMode = 'ok';
     window.showSaveFilePicker = async ({ suggestedName }) => {
+      if (window.__saveMode === 'cancel') throw new DOMException('The user aborted a request.', 'AbortError');
       const parts = [];
       return { kind: 'file', name: suggestedName,
         async getFile() { return new File(parts, suggestedName); },
         async createWritable() {
-          return { async write(c) { parts.push(c.slice()); }, async close() { window.__saved[suggestedName] = new Blob(parts); }, async abort() { parts.length = 0; } };
+          return { async write(c) { if (window.__saveMode === 'fail' && parts.length > 1) throw new Error('Disk full.'); parts.push(c.slice()); }, async close() { window.__saved[suggestedName] = new Blob(parts); }, async abort() { parts.length = 0; } };
         } };
     };
   }, walk(ROOT));

@@ -126,7 +126,10 @@ function openPictures(kind, names, data, done = () => {}) {
   return {
     kind, count: names.length,
     name: (i) => names[i],
-    async data(i) { const d = await data(i); return d instanceof Blob ? new Uint8Array(await d.arrayBuffer()) : d; },
+    async data(i) {   // always a Uint8Array: pages arrive as Blobs, ArrayBuffers or Uint8Arrays depending on where they come from
+      const d = await data(i);
+      return d instanceof Uint8Array ? d : new Uint8Array(d instanceof Blob ? await d.arrayBuffer() : d);
+    },
     async size(i) { const b = await bitmap(i); return { w: b.width, h: b.height }; },
     async draw(i, canvas, pxW) {
       const b = await bitmap(i);

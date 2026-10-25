@@ -139,9 +139,9 @@ def make_rar(path, pages, label):
     path.write_bytes(bytes(out))
 
 
-def make_7z(path, pages, label):
+def make_7z(path, pages, label, password=None):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with py7zr.SevenZipFile(path, "w") as z:
+    with py7zr.SevenZipFile(path, "w", password=password) as z:
         for n in range(1, pages + 1):
             z.writestr(page_png(n, label), f"{label}/page{n}.png")
 
@@ -180,6 +180,11 @@ if __name__ == "__main__":
     make_7z(LIBRARY / "Comics" / "Seven.cb7", 3, "Seven")
     make_cbz(LIBRARY / "Comics" / "Zip In Disguise.cbr", 2, "Disguise")   # a zip with a .cbr name, which is common
     make_picture_folder(LIBRARY / "Comics" / "Loose Pages", 3, "Loose")
+    make_rar(LIBRARY / "Comics" / "Minis" / "Tiny Tales.cbr", 2, "Tiny")   # the CBZ beside it counts as its saved copy
+    # files that should fail politely
+    make_7z(LIBRARY / "Trouble" / "Secret.cb7", 2, "Secret", password="hunter2")
+    (LIBRARY / "Trouble" / "Broken.cbr").write_bytes(bytes(range(256)) * 8)
+    (LIBRARY / "Trouble" / "Some Book.mobi").write_bytes(b"BOOKMOBI pretend Kindle book")
     (LIBRARY / "notes.txt").write_text("not a book")
     (LIBRARY / "Thumbs.db").write_bytes(b"junk the computer made")
     (LIBRARY / ".hidden.pdf").write_bytes(b"%PDF-1.4 hidden")
