@@ -3,7 +3,8 @@
    and kept in the database, so a big collection is slow only the first time it's browsed. */
 
 import * as store from './store.js';
-import { kindOf } from './source.js';
+import { kindOf, JSON_FILE } from './source.js';
+import * as backup from './backup.js';
 import { makeCover, EPUB_WHY, ARCHIVES, isPicture, comicPages } from './books.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -52,6 +53,7 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
         <input class="filter" type="search" placeholder="Find in this folder" aria-label="Find in this folder" hidden>
         <button class="btn quiet" data-act="file" title="Open one PDF, comic (CBZ, CBR, CB7) or EPUB file">Open a file</button>
         <button class="btn quiet" data-act="change" hidden>Change folder</button>
+        <button class="btn quiet notes-btn" data-act="notes" title="Back up or restore your notes">Notes<i class="dot" hidden title="Notes changed since the last backup"></i></button>
       </div>
     </header>
     <main class="lib-body">
@@ -71,6 +73,18 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
         <div class="others" hidden><h2>Other files <span>Palimpsest can’t open these</span></h2><ul></ul></div></section>
     </main>
     <input type="file" class="one-file" accept=".pdf,.cbz,.cbr,.cb7,.cbt,.epub,application/pdf,application/epub+zip" hidden>
+    <dialog class="notes-box" aria-labelledby="notes-title">
+      <h2 id="notes-title">Your notes</h2>
+      <p>Your notes and reading places are kept only on this device. Uninstalling the app or moving to a new tablet loses them, unless you’ve saved a backup. Keep the backup file somewhere safe, like Google Drive or your computer.</p>
+      <p class="notes-last"></p>
+      <div class="notes-actions">
+        <button class="btn" data-act="backup">Save a backup</button>
+        <button class="btn quiet" data-act="restore">Restore from a backup</button>
+      </div>
+      <p class="notes-result" role="status"></p>
+      <button class="btn quiet notes-done" data-act="close-notes">Done</button>
+    </dialog>
+    <input type="file" class="restore-file" hidden>
     <div class="toast" role="status" hidden></div>`;
 
   const $ = (s) => root.querySelector(s);
@@ -212,7 +226,38 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     empty.hidden = folders.children.length + grid.children.length > 0;
     empty.textContent = q ? 'Nothing here matches “' + filter.value.trim() + '”.' : 'No PDFs, comics or EPUBs in this folder.';
     await renderRecent();
+    showNotesState();
   }
+
+  /* ---------- notes backup ---------- */
+  const notesBox = $('.notes-box'), notesResult = $('.notes-result');
+  if (!source.native) $('.restore-file').accept = '.json,application/json';   // Android's file picker greys out JSON files when asked to filter
+  async function showNotesState() {
+    const [last, stale] = await Promise.all([backup.lastBackup(), backup.needsBackup()]);
+    $('.notes-btn .dot').hidden = !stale;
+    $('.notes-last').textContent = (last ? 'Last backup: ' + new Date(last).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) + '.' : 'No backup yet.') +
+      (stale && last ? ' Your notes have changed since then.' : '');
+  }
+  async function saveBackup() {
+    const data = await backup.makeBackup();
+    const writer = await source.saveFile(backup.backupName(), { near: stack.length ? stack[stack.length - 1].ref : null, type: JSON_FILE });
+    try { await writer.write(new TextEncoder().encode(JSON.stringify(data))); }
+    catch (e) { await writer.abort().catch(() => {}); throw e; }
+    const saved = await writer.close();
+    await backup.markBackedUp();
+    const inked = data.books.filter((b) => b.ink).length;
+    notesResult.textContent = `Saved “${saved.name}”, with notes from ${inked} ${inked === 1 ? 'book' : 'books'}.`;
+    await showNotesState();
+  }
+  $('.restore-file').addEventListener('change', async () => {
+    const f = $('.restore-file').files[0]; if (!f) return;
+    try {
+      const r = await backup.restoreBackup(await f.text());
+      notesResult.textContent = !r.books ? 'Done. This backup had reading places but no notes.'
+        : `Brought back notes for ${r.books} ${r.books === 1 ? 'book' : 'books'}.` + (r.merged ? ` ${r.merged} already had notes here; you now have both.` : '');
+      if (rootDir) await render(); else await showNotesState();
+    } catch (err) { notesResult.textContent = err.message || String(err); }
+  });
 
   async function renderRecent() {
     const sec = $('.recent'), shelf = $('.shelf');
@@ -299,6 +344,7 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
     await load();
   }
   async function start() {
+    showNotesState();
     let r = null;
     try { r = await source.restore(); } catch {}
     if (!r) return showState('welcome');
@@ -313,8 +359,14 @@ export function makeLibrary(root, source, { onOpen, onNavigate }) {
       if (a === 'pick' || a === 'change') await useRoot(await source.pick());
       else if (a === 'again') await useRoot(await source.again());
       else if (a === 'file') { const f = $('.one-file'); f.value = ''; f.click(); }
+      else if (a === 'notes') { notesResult.textContent = ''; await showNotesState(); notesBox.showModal(); }
+      else if (a === 'close-notes') notesBox.close();
+      else if (a === 'backup') { notesResult.textContent = 'Saving…'; await saveBackup().catch((e) => { notesResult.textContent = ''; throw e; }); }
+      else if (a === 'restore') { const f = $('.restore-file'); f.value = ''; f.click(); }
     } catch (err) {
-      if (err && err.name !== 'AbortError' && !/cancel/i.test(err.message || '')) toast(err.message || String(err));
+      if (err && err.name !== 'AbortError' && !/cancel/i.test(err.message || '')) {
+        if (notesBox.open) notesResult.textContent = err.message || String(err); else toast(err.message || String(err));
+      }
     }
     if (b.dataset.depth !== undefined) { stack = stack.slice(0, +b.dataset.depth + 1); load(); }
   });

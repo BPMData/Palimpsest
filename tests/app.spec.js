@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { openApp, stroke, inked, pageBox } = require('./support/library');
+const { openApp, useLibrary, stroke, inked, pageBox } = require('./support/library');
 
 const label = (page) => page.locator('.rd-page');
 
@@ -333,6 +333,90 @@ test('Clear page needs a second tap; Ctrl+Z undoes it; the slider jumps to a pag
   await page.locator('.rd-scrub').fill('9');
   await page.locator('.rd-scrub').dispatchEvent('change');
   await expect(label(page)).toHaveText('8–9 / 11');
+});
+
+/* the backup the pretend "Save as" screen kept, as a file to hand back to "Restore" */
+async function savedBackup(page) {
+  const { name, text } = await page.evaluate(async () => {
+    const name = Object.keys(window.__saved).find((n) => n.startsWith('Palimpsest notes'));
+    return { name, text: await window.__saved[name].text() };
+  });
+  return { name, mimeType: 'application/json', buffer: Buffer.from(text) };
+}
+
+test('notes backup: save on one tablet, restore on a new one before choosing a folder', async ({ page, browser }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Saga Vol 1');
+  const b = await pageBox(page);
+  await stroke(page, [[b.x + 80, b.y + 90], [b.x + 200, b.y + 160]]);
+  const n = await inked(page);
+  await page.keyboard.press('ArrowRight');
+  await expect(label(page)).toHaveText('2–3 / 11');
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await expect(page.locator('.notes-btn .dot')).toBeVisible();                  // changed, never backed up
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await expect(page.locator('.notes-last')).toContainText('No backup yet.');
+  await page.getByRole('button', { name: 'Save a backup' }).click();
+  await expect(page.locator('.notes-result')).toContainText('with notes from 1 book.');
+  await expect(page.locator('.notes-last')).toContainText('Last backup:');
+  await expect(page.locator('.notes-btn .dot')).toBeHidden();
+  const file = await savedBackup(page);
+  expect(file.name).toMatch(/^Palimpsest notes \d{4}-\d\d-\d\d\.json$/);
+
+  // a new tablet: empty storage, no folder chosen yet
+  const fresh = await browser.newContext({ baseURL: 'http://127.0.0.1:4310', viewport: { width: 1280, height: 800 }, hasTouch: true });
+  const tablet = await fresh.newPage();
+  await useLibrary(tablet);
+  await tablet.goto('/www/index.html');
+  await tablet.getByRole('button', { name: 'Notes' }).click();
+  await tablet.locator('.restore-file').setInputFiles(file);
+  await expect(tablet.locator('.notes-result')).toHaveText('Brought back notes for 1 book.');
+  await expect(tablet.locator('.notes-btn .dot')).toBeHidden();                // that backup counts as this tablet's last one
+  await tablet.getByRole('button', { name: 'Done' }).click();
+  await tablet.getByRole('button', { name: 'Choose your library folder' }).click();
+  await tablet.locator('.tile.folder', { hasText: 'Comics' }).click();
+  await expect(tablet.locator('.tile.book', { hasText: 'Saga Vol 1' }).locator('.inked')).toBeVisible();
+  await openBook(tablet, null, 'Saga Vol 1');
+  await expect(label(tablet)).toHaveText('2–3 / 11');                          // the place came back too
+  await tablet.keyboard.press('Home');
+  await expect(label(tablet)).toHaveText('1 / 11');
+  await tablet.locator('.pg canvas.ink').first().waitFor({ state: 'attached' });
+  await expect.poll(() => inked(tablet)).toBe(n);
+  await fresh.close();
+});
+
+test('restoring over notes made since the backup keeps them all', async ({ page }) => {
+  await openApp(page);
+  await openBook(page, 'Comics', 'Saga Vol 1');
+  const b = await pageBox(page);
+  await stroke(page, [[b.x + 80, b.y + 90], [b.x + 200, b.y + 160]]);
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await page.getByRole('button', { name: 'Save a backup' }).click();
+  await expect(page.locator('.notes-result')).toContainText('Saved');
+  const file = await savedBackup(page);
+  await page.getByRole('button', { name: 'Done' }).click();
+  await openBook(page, null, 'Saga Vol 1');
+  await stroke(page, [[b.x + 80, b.y + 300], [b.x + 200, b.y + 360]]);         // a second note, after the backup
+  await page.getByRole('button', { name: 'Back to the library' }).click();
+  await expect(page.locator('.notes-btn .dot')).toBeVisible();
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await expect(page.locator('.notes-last')).toContainText('changed since then');
+  await page.locator('.restore-file').setInputFiles(file);
+  await expect(page.locator('.notes-result')).toContainText('you now have both');
+  const strokes = await page.evaluate(async () => {
+    const store = await import('/www/js/store.js');
+    const [[, ink]] = (await store.entries('ink'));
+    return ink.pages[0].length;
+  });
+  expect(strokes).toBe(2);
+});
+
+test('restoring a file that isn’t a backup says so and changes nothing', async ({ page }) => {
+  await openApp(page);
+  await page.getByRole('button', { name: 'Notes' }).click();
+  await page.locator('.restore-file').setInputFiles({ name: 'shopping.json', mimeType: 'application/json', buffer: Buffer.from('{"milk": 2}') });
+  await expect(page.locator('.notes-result')).toHaveText('This isn’t a Palimpsest backup file.');
 });
 
 test('phone width: no sideways scrolling in the library or the reader', async ({ page }) => {

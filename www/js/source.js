@@ -4,7 +4,8 @@
    - Browser (desktop Chrome / Edge): the File System Access API (showDirectoryPicker).
    - iPad (later): a native plugin with the same methods (folder picker with a saved bookmark; saving through
      the system "Save to Files" screen). Nothing outside this file needs to know which one is in use.
-   Every source has: restore(), pick(), list(folderRef), read(fileEntry), saveFile(name, { near }).
+   Every source has: restore(), pick(), list(folderRef), read(fileEntry), saveFile(name, { near, type }).
+   type says what's being saved, like CBZ or JSON below (CBZ if left out).
    saveFile shows the system "Save as" screen; the app can write only the one new file the reader names there.
    It returns a writer: { write(Uint8Array), close() -> { name, size }, abort() } (abort removes the half-written file).
    Both give the same shape:
@@ -15,7 +16,8 @@
 import * as store from './store.js';
 
 export const KINDS = { pdf: 'pdf', cbz: 'cbz', zip: 'cbz', epub: 'epub', cbr: 'cbr', cb7: 'cb7', cbt: 'cbt' };
-const CBZ_TYPE = 'application/vnd.comicbook+zip';
+export const CBZ = { mime: 'application/vnd.comicbook+zip', ext: '.cbz', description: 'Comic book (CBZ)' };
+export const JSON_FILE = { mime: 'application/json', ext: '.json', description: 'Palimpsest notes backup' };
 
 /* Uint8Array -> base64, in slices so big pages don't overflow the call stack */
 function base64(u8) {
@@ -58,8 +60,8 @@ function androidSource(Plugin, Cap) {
         : { dir: false, name: it.name, size: it.size, modified: it.modified, kind: kindOf(it.name) || 'other', ref: { uri: it.uri } }).sort(byName);
     },
     /* Android's "Save as" screen opens in the folder being browsed. The pages cross to Android in 1 MB pieces. */
-    async saveFile(name, { near } = {}) {
-      const { id, name: saved } = await Plugin.saveStart({ name, mime: CBZ_TYPE, treeUri: root && root.treeUri, docId: near && near.docId });
+    async saveFile(name, { near, type = CBZ } = {}) {
+      const { id, name: saved } = await Plugin.saveStart({ name, mime: type.mime, treeUri: root && root.treeUri, docId: near && near.docId });
       let size = 0;
       return {
         async write(chunk) {
@@ -123,9 +125,9 @@ function webSource() {
       return out.sort(byName);
     },
     async read(entry) { return (await entry.ref.getFile()).arrayBuffer(); },
-    async saveFile(name, { near } = {}) {
+    async saveFile(name, { near, type = CBZ } = {}) {
       if (typeof window.showSaveFilePicker !== 'function') throw new Error('This browser can’t save files. Use Chrome or Edge.');
-      const opts = { suggestedName: name, types: [{ description: 'Comic book (CBZ)', accept: { [CBZ_TYPE]: ['.cbz'] } }] };
+      const opts = { suggestedName: name, types: [{ description: type.description, accept: { [type.mime]: [type.ext] } }] };
       if (near && near.kind === 'directory') opts.startIn = near;
       let h;
       try { h = await window.showSaveFilePicker(opts); }

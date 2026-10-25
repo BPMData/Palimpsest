@@ -1,6 +1,6 @@
 /* Everything Palimpsest remembers, in the app's own IndexedDB database:
    kv      small settings and the library folder (on the web: its handle; on Android: its tree URI)
-   books   per book: { key, name, path, page, pages, opened, inked }
+   books   per book: { key, name, path, page, pages, opened, inked, inkedAt }  (inkedAt: when its notes last changed)
    ink     per book: { v: 1, pages: { "0": [strokes], ... } }
    covers  per book: a small JPEG Blob
    A book's key is its file name plus its size, so moving or renaming a folder keeps its ink. */
@@ -32,6 +32,16 @@ export const get = (store, key) => run(store, 'readonly', (s) => s.get(key));
 export const put = (store, key, val) => run(store, 'readwrite', (s) => s.put(val, key));
 export const del = (store, key) => run(store, 'readwrite', (s) => s.delete(key));
 export const all = (store) => run(store, 'readonly', (s) => s.getAll());
+/* [key, value] pairs, read together so they match up */
+export async function entries(store) {
+  const db = await open();
+  return new Promise((ok, bad) => {
+    const tx = db.transaction(store, 'readonly'), s = tx.objectStore(store);
+    const keys = s.getAllKeys(), vals = s.getAll();
+    tx.oncomplete = () => ok(keys.result.map((k, i) => [k, vals.result[i]]));
+    tx.onerror = tx.onabort = () => bad(tx.error);
+  });
+}
 
 export const bookKey = (name, size) => name + '|' + size;
 
